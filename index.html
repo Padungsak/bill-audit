@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ระบบตรวจสอบใบเสร็จ/ตารางคำนวณ</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      margin: 16px;
+      background: #f4f6f8;
+      color: #333;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+    }
+    h2, h3 { margin-top: 0; }
+    input[type="text"], input[type="file"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px;
+      margin-top: 6px;
+      margin-bottom: 12px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 15px;
+    }
+    button {
+      width: 100%;
+      background: #007aff;
+      color: #fff;
+      border: none;
+      padding: 12px;
+      font-size: 16px;
+      font-weight: bold;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    button:disabled { background: #bbb; }
+    .status { margin-top: 10px; font-weight: bold; color: #555; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      text-align: left;
+    }
+    th { background: #f0f0f0; }
+    .err-row {
+      background: #ffe5e5;
+      color: #d32f2f;
+      font-weight: bold;
+    }
+    .badge-ok {
+      display: inline-block;
+      padding: 4px 8px;
+      background: #e8f5e9;
+      color: #2e7d32;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    .badge-err {
+      display: inline-block;
+      padding: 4px 8px;
+      background: #ffebee;
+      color: #c62828;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h2>ตรวจบิล / ตารางคำนวณ</h2>
+    <label>Gemini API Key:</label>
+    <input type="text" id="apiKey" placeholder="ใส่ Gemini API Key ของคุณ">
+    
+    <label>เลือกรูปภาพตาราง (เลือกได้หลายรูป):</label>
+    <input type="file" id="imageInput" accept="image/*" multiple>
+    
+    <button id="processBtn" onclick="processAllImages()">เริ่มตรวจสอบ</button>
+    <div id="status" class="status"></div>
+  </div>
+
+  <div id="resultsContainer"></div>
+
+  <script>
+    // แปลงไฟล์เป็น Base64
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = error => reject(error);
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function processAllImages() {
+      const apiKey = document.getElementById('apiKey').value.trim();
+      const files = document.getElementById('imageInput').files;
+      const statusDiv = document.getElementById('status');
+      const resultsContainer = document.getElementById('resultsContainer');
+      const processBtn = document.getElementById('processBtn');
+
+      if (!apiKey) {
+        alert("กรุณากรอก Gemini API Key");
+        return;
+      }
+      if (files.length === 0) {
+        alert("กรุณาเลือกรูปภาพอย่างน้อย 1 รูป");
+        return;
+      }
+
+      processBtn.disabled = true;
+      resultsContainer.innerHTML = "";
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        statusDiv.innerText = `กำลังประมวลผลรูปที่ ${i + 1} จาก ${files.length}: ${file.name}...`;
+
+        try {
+          const base64Data = await fileToBase64(file);
+          const rows = await callGeminiVision(apiKey, base64Data, file.type);
+          renderTableResult(file.name, rows);
+        } catch (err) {
+          console.error(err);
+          const errDiv = document.createElement('div');
+          errDiv.className = 'card';
+          errDiv.innerHTML = `<h3>${file.name}</h3><p style="color:red;">เกิดข้อผิดพลาด: ${err.message}</p>`;
+          resultsContainer.appendChild(errDiv);
+        }
+      }
+
+      statusDiv.innerText = "ตรวจสอบเสร็จสิ้นครบทุกภาพแล้ว";
+      processBtn.disabled = false;
+    }
+
+    async function callGeminiVision(apiKey, base64Data, mimeType) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+
+      const promptText = `
+คุณเป็นระบบอ่านข้อมูลตาราง OCR สำหรับใบเสร็จ
+จงอ่านข้อมูลทุกแถวที่มีตัวเลขในตาราง 4 คอลัมน์ (ราคา, รายการ, จำนวน, รวม)
+ตอบกลับเป็น JSON Array โดยไม่มี markdown wrapper ห้ามมีคำอธิบายเพิ่มเติม
+รูปแบบโครงสร้าง:
+[
+  {
+    "row_index": 1,
+    "item": "ทู ล",
+    "price": 45.0,
+    "qty": 250.0,
+    "total_in_sheet": 11250.0
+  }
+]
+หมายเหตุ:
+- ถ้าตัวเลขมีทศนิยมให้อ่านมาให้ครบ
+- คอลัมน์ 1 คือ price, คอลัมน์ 2 คือ item, คอลัมน์ 3 คือ qty, คอลัมน์ 4 คือ total_in_sheet
+`;
+
+      const requestBody = {
+        contents: [{
+          parts: [
+            { text: promptText },
+            {
+              inline_data: {
+                mime_type: mimeType || "image/jpeg",
+                data: base64Data
+              }
+            }
+          ]
+        }],
+        generationConfig: {
+          response_mime_type: "application/json"
+        }
+      };
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (!response.ok) {
+        throw new Error(`API Error: ${response.statusText}`);
+      }
+
+      const jsonRes = await response.json();
+      const rawText = jsonRes.candidates[0].content.parts[0].text;
+      return JSON.parse(rawText);
+    }
+
+    function renderTableResult(fileName, rows) {
+      const container = document.getElementById('resultsContainer');
+      const card = document.createElement('div');
+      card.className = 'card';
+
+      let errorCount = 0;
+      let tableRowsHtml = "";
+
+      rows.forEach((r, idx) => {
+        const p = parseFloat(r.price) || 0;
+        const q = parseFloat(r.qty) || 0;
+        const recordedTotal = parseFloat(r.total_in_sheet) || 0;
+        const expectedTotal = Math.round((p * q) * 100) / 100;
+
+        // เช็คความต่าง ยอมรับค่าคลาดเคลื่อนทางทศนิยม 0.05
+        const isWrong = Math.abs(recordedTotal - expectedTotal) > 0.05;
+
+        if (isWrong) {
+          errorCount++;
+          tableRowsHtml += `
+            <tr class="err-row">
+              <td>${idx + 1}</td>
+              <td>${r.item || '-'}</td>
+              <td>${p}</td>
+              <td>${q}</td>
+              <td>${recordedTotal}</td>
+              <td>${expectedTotal} (ผิด)</td>
+            </tr>
+          `;
+        } else {
+          tableRowsHtml += `
+            <tr>
+              <td>${idx + 1}</td>
+              <td>${r.item || '-'}</td>
+              <td>${p}</td>
+              <td>${q}</td>
+              <td>${recordedTotal}</td>
+              <td>ถูกต้อง</td>
+            </tr>
+          `;
+        }
+      });
+
+      const badge = errorCount > 0 
+        ? `<span class="badge-err">พบข้อผิดพลาด ${errorCount} แถว</span>`
+        : `<span class="badge-ok">ถูกต้องทุกแถว</span>`;
+
+      card.innerHTML = `
+        <h3>ไฟล์: ${fileName} ${badge}</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>แถว</th>
+              <th>รายการ</th>
+              <th>ราคา (1)</th>
+              <th>จำนวน (3)</th>
+              <th>รวมในบิล (4)</th>
+              <th>ผลตรวจสอบ</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tableRowsHtml}
+          </tbody>
+        </table>
+      `;
+
+      container.appendChild(card);
+    }
+  </script>
+</body>
+</html>
